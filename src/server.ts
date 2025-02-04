@@ -1,10 +1,10 @@
 // src/server.ts
-// @ts-nocheck
+//@ts-nocheck
 import express from "express";
 import http from "http";
 import { WebSocketServer, WebSocket } from "ws";
 import { prisma } from "./database.js";
-import { adjustPrice } from "./priceHandler.js";
+import { adjustPrice, subscribeToSymbol } from "./priceHandler.js";
 import { PORT } from "./config.js";
 
 const app = express();
@@ -32,6 +32,9 @@ wss.on("connection", (ws, req) => {
       return;
     }
 
+    // Subscribe to Binance WebSocket for this symbol
+    subscribeToSymbol(symbol);
+
     if (!clients.has(symbol)) {
       clients.set(symbol, new Set());
     }
@@ -42,9 +45,6 @@ wss.on("connection", (ws, req) => {
         const manipulatedPrice = await adjustPrice(symbol);
         if (manipulatedPrice) {
           manipulatedPrices.set(symbol, manipulatedPrice);
-          console.log(
-            `Real-Time Price for ${symbol}: $${manipulatedPrice.toFixed(2)}`
-          );
           clients.get(symbol)?.forEach((client) => {
             if (client.readyState === WebSocket.OPEN) {
               client.send(JSON.stringify({ symbol, price: manipulatedPrice }));

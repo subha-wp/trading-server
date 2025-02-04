@@ -1,47 +1,116 @@
 // src/priceHandler.ts
 // @ts-nocheck
-import axios from "axios";
+import WebSocket from "ws";
 import { prisma } from "./database.js";
-import { BINANCE_API } from "./config.js";
+import { BINANCE_WS_URL, BINANCE_CONFIG } from "./config.js";
 
-const MAX_RETRIES = 3;
-const RETRY_DELAY = 1000; // 1 second
+// Price cache
+const priceCache = new Map<string, number>();
+let binanceWs: WebSocket | null = null;
+let pingInterval: NodeJS.Timeout;
+let reconnectAttempts = 0;
+const activeSymbols = new Set<string>();
 
-async function delay(ms: number) {
-  return new Promise((resolve) => setTimeout(resolve, ms));
+/**
+ * Initialize WebSocket connection to Binance
+ */
+function initBinanceWebSocket() {
+  if (binanceWs) {
+    binanceWs.terminate();
+  }
+
+  binanceWs = new WebSocket(BINANCE_WS_URL);
+
+  binanceWs.on("open", () => {
+    console.log("Connected to Binance WebSocket");
+    reconnectAttempts = 0;
+
+    // Subscribe to all active symbols
+    if (activeSymbols.size > 0) {
+      const subscribeMsg = {
+        method: "SUBSCRIBE",
+        params: Array.from(activeSymbols).map(
+          (symbol) => `${symbol.toLowerCase()}@ticker`
+        ),
+        id: Date.now(),
+      };
+      binanceWs.send(JSON.stringify(subscribeMsg));
+    }
+
+    // Setup ping interval
+    pingInterval = setInterval(() => {
+      if (binanceWs?.readyState === WebSocket.OPEN) {
+        binanceWs.ping();
+      }
+    }, BINANCE_CONFIG.PING_INTERVAL);
+  });
+
+  binanceWs.on("message", (data: Buffer) => {
+    try {
+      const message = JSON.parse(data.toString());
+
+      // Handle ticker updates
+      if (message.e === "24hrTicker") {
+        const symbol = message.s;
+        const price = parseFloat(message.c); // Current price
+        priceCache.set(symbol, price);
+      }
+    } catch (error) {
+      console.error("Error processing WebSocket message:", error);
+    }
+  });
+
+  binanceWs.on("close", () => {
+    console.log("Binance WebSocket connection closed");
+    clearInterval(pingInterval);
+    handleReconnect();
+  });
+
+  binanceWs.on("error", (error) => {
+    console.error("Binance WebSocket error:", error);
+    binanceWs?.terminate();
+  });
 }
 
 /**
- * Fetches the latest price from Binance for the given symbol with retry mechanism.
+ * Handle WebSocket reconnection with exponential backoff
  */
-export async function fetchBinancePrice(
-  symbol: string,
-  retryCount = 0
-): Promise<number | null> {
-  try {
-    const response = await axios.get(`${BINANCE_API}${symbol.toUpperCase()}`, {
-      timeout: 5000, // 5 second timeout
-      headers: {
-        "User-Agent": "Mozilla/5.0", // Add user agent to prevent some blocks
-      },
-    });
-    return parseFloat(response.data.price);
-  } catch (error) {
-    console.error(`Error fetching Binance price for ${symbol}:`, {
-      attempt: retryCount + 1,
-      error: error.message,
-      status: error.response?.status,
-      data: error.response?.data,
-    });
-
-    if (retryCount < MAX_RETRIES) {
-      await delay(RETRY_DELAY);
-      return fetchBinancePrice(symbol, retryCount + 1);
-    }
-
-    // If all retries failed, return null
-    return null;
+function handleReconnect() {
+  if (reconnectAttempts >= BINANCE_CONFIG.MAX_RECONNECT_ATTEMPTS) {
+    console.error("Max reconnection attempts reached");
+    return;
   }
+
+  const delay = BINANCE_CONFIG.RECONNECT_DELAY * Math.pow(2, reconnectAttempts);
+  reconnectAttempts++;
+
+  console.log(`Reconnecting in ${delay}ms... (Attempt ${reconnectAttempts})`);
+  setTimeout(initBinanceWebSocket, delay);
+}
+
+/**
+ * Subscribe to a symbol's price updates
+ */
+export function subscribeToSymbol(symbol: string) {
+  if (!activeSymbols.has(symbol)) {
+    activeSymbols.add(symbol);
+
+    if (binanceWs?.readyState === WebSocket.OPEN) {
+      const subscribeMsg = {
+        method: "SUBSCRIBE",
+        params: [`${symbol.toLowerCase()}@ticker`],
+        id: Date.now(),
+      };
+      binanceWs.send(JSON.stringify(subscribeMsg));
+    }
+  }
+}
+
+/**
+ * Get the current price for a symbol
+ */
+export function getCurrentPrice(symbol: string): number | null {
+  return priceCache.get(symbol) || null;
 }
 
 /**
@@ -77,14 +146,14 @@ export async function adjustPrice(symbol: string) {
       return null;
     }
 
-    const binancePrice = await fetchBinancePrice(symbol);
-    if (!binancePrice) {
-      console.error(`Could not fetch price for symbol: ${symbol}`);
-      return symbolData.manipulatedPrice; // Return last known price if fetch fails
+    const currentPrice = getCurrentPrice(symbol);
+    if (!currentPrice) {
+      console.error(`No price available for symbol: ${symbol}`);
+      return symbolData.manipulatedPrice;
     }
 
     const { upValue, downValue } = await getOrderTotals(symbolData.id);
-    let manipulatedPrice = binancePrice;
+    let manipulatedPrice = currentPrice;
 
     const totalValue = upValue + downValue;
 
@@ -103,7 +172,7 @@ export async function adjustPrice(symbol: string) {
       where: { name: symbol },
       data: {
         manipulatedPrice,
-        currentPrice: binancePrice,
+        currentPrice,
       },
     });
 
@@ -113,3 +182,6 @@ export async function adjustPrice(symbol: string) {
     return null;
   }
 }
+
+// Initialize WebSocket connection
+initBinanceWebSocket();
