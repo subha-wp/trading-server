@@ -10,48 +10,66 @@ import { PORT } from "./config.js";
 const app = express();
 app.use(express.json());
 
-const manipulatedPrices = new Map<string, number>(); // In-memory price storage
-const clients = new Map<string, Set<WebSocket>>(); // Track WebSocket clients
+const manipulatedPrices = new Map<string, number>();
+const clients = new Map<string, Set<WebSocket>>();
+
+// Health check endpoint
+app.get("/health", (req, res) => {
+  res.status(200).json({ status: "ok" });
+});
 
 // WebSocket Server for Real-Time Prices
 const server = http.createServer(app);
 const wss = new WebSocketServer({ server });
 
 wss.on("connection", (ws, req) => {
-  const params = new URLSearchParams(req.url?.split("?")[1]);
-  const symbol = params.get("symbol")?.toUpperCase();
+  try {
+    const params = new URLSearchParams(req.url?.split("?")[1]);
+    const symbol = params.get("symbol")?.toUpperCase();
 
-  if (!symbol) {
-    ws.close();
-    return;
-  }
+    if (!symbol) {
+      ws.close();
+      return;
+    }
 
-  if (!clients.has(symbol)) {
-    clients.set(symbol, new Set());
-  }
-  clients.get(symbol)?.add(ws);
+    if (!clients.has(symbol)) {
+      clients.set(symbol, new Set());
+    }
+    clients.get(symbol)?.add(ws);
 
-  const intervalId = setInterval(async () => {
-    const manipulatedPrice = await adjustPrice(symbol);
-    if (manipulatedPrice) {
-      manipulatedPrices.set(symbol, manipulatedPrice); // Store real-time price
-      console.log(
-        `Real-Time Price for ${symbol}: $${manipulatedPrice.toFixed(2)}`
-      );
-      clients.get(symbol)?.forEach((client) => {
-        if (client.readyState === WebSocket.OPEN) {
-          client.send(JSON.stringify({ symbol, price: manipulatedPrice }));
+    const intervalId = setInterval(async () => {
+      try {
+        const manipulatedPrice = await adjustPrice(symbol);
+        if (manipulatedPrice) {
+          manipulatedPrices.set(symbol, manipulatedPrice);
+          console.log(
+            `Real-Time Price for ${symbol}: $${manipulatedPrice.toFixed(2)}`
+          );
+          clients.get(symbol)?.forEach((client) => {
+            if (client.readyState === WebSocket.OPEN) {
+              client.send(JSON.stringify({ symbol, price: manipulatedPrice }));
+            }
+          });
         }
-      });
-    }
-  }, 1000);
+      } catch (error) {
+        console.error(`Error in price update interval for ${symbol}:`, error);
+      }
+    }, 1000);
 
-  ws.on("close", () => {
-    clients.get(symbol)?.delete(ws);
-    if (clients.get(symbol)?.size === 0) {
-      clearInterval(intervalId);
-    }
-  });
+    ws.on("error", (error) => {
+      console.error(`WebSocket error for ${symbol}:`, error);
+    });
+
+    ws.on("close", () => {
+      clients.get(symbol)?.delete(ws);
+      if (clients.get(symbol)?.size === 0) {
+        clearInterval(intervalId);
+      }
+    });
+  } catch (error) {
+    console.error("Error in WebSocket connection:", error);
+    ws.close();
+  }
 });
 
 // POST Route: Place a New Trade
@@ -105,7 +123,7 @@ app.post("/api/orders", async (req, res) => {
     // Trade Settlement after Expiry
     setTimeout(async () => {
       try {
-        const realTimePrice = manipulatedPrices.get(symbol); // Use real-time price
+        const realTimePrice = manipulatedPrices.get(symbol);
         if (!realTimePrice) return;
 
         const isWin =
@@ -139,10 +157,22 @@ app.post("/api/orders", async (req, res) => {
 
     res.status(201).json({ success: true, order });
   } catch (error) {
-    console.error(error);
+    console.error("Error creating order:", error);
     res.status(500).json({ error: "Server Error" });
   }
 });
 
 // Start the Server
-server.listen(PORT, () => console.log(`Server running on port ${PORT}`));
+server.listen(PORT, () => {
+  console.log(`Server running on port ${PORT}`);
+  console.log(`Environment: ${process.env.NODE_ENV || "development"}`);
+});
+
+// Handle process termination
+process.on("SIGTERM", () => {
+  console.log("SIGTERM received. Closing server...");
+  server.close(() => {
+    console.log("Server closed");
+    process.exit(0);
+  });
+});
