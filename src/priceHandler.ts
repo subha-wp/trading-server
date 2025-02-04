@@ -41,7 +41,7 @@ export async function getOrderTotals(symbolId: number) {
  */
 export async function adjustPrice(symbol: string) {
   const symbolData = await prisma.symbol.findUnique({
-    where: { binanceSymbol: symbol },
+    where: { name: symbol },
   });
   if (!symbolData) return null;
 
@@ -65,7 +65,7 @@ export async function adjustPrice(symbol: string) {
   }
 
   await prisma.symbol.update({
-    where: { binanceSymbol: symbol },
+    where: { name: symbol },
     data: { manipulatedPrice },
   });
 
