@@ -35,7 +35,9 @@ wss.on("connection", (ws, req) => {
     const manipulatedPrice = await adjustPrice(symbol);
     if (manipulatedPrice) {
       manipulatedPrices.set(symbol, manipulatedPrice); // Store real-time price
-
+      console.log(
+        `Real-Time Price for ${symbol}: $${manipulatedPrice.toFixed(2)}`
+      );
       clients.get(symbol)?.forEach((client) => {
         if (client.readyState === WebSocket.OPEN) {
           client.send(JSON.stringify({ symbol, price: manipulatedPrice }));
