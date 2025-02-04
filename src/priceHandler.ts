@@ -1,8 +1,8 @@
 // src/priceHandler.ts
 // @ts-nocheck
 import axios from "axios";
-import { prisma } from "./database";
-import { BINANCE_API } from "./config";
+import { prisma } from "./database.js";
+import { BINANCE_API } from "./config.js";
 
 /**
  * Fetches the latest price from Binance for the given symbol.

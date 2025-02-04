@@ -3,9 +3,9 @@
 import express from "express";
 import http from "http";
 import { WebSocketServer } from "ws";
-import { prisma } from "./database";
-import { adjustPrice } from "./priceHandler";
-import { PORT } from "./config";
+import { prisma } from "./database.js";
+import { adjustPrice } from "./priceHandler.js";
+import { PORT } from "./config.js";
 
 const app = express();
 app.use(express.json());
@@ -35,7 +35,9 @@ wss.on("connection", (ws, req) => {
     const manipulatedPrice = await adjustPrice(symbol);
     if (manipulatedPrice) {
       manipulatedPrices.set(symbol, manipulatedPrice); // Store real-time price
-
+      console.log(
+        `Real-Time Price for ${symbol}: $${manipulatedPrice.toFixed(2)}`
+      );
       clients.get(symbol)?.forEach((client) => {
         if (client.readyState === WebSocket.OPEN) {
           client.send(JSON.stringify({ symbol, price: manipulatedPrice }));

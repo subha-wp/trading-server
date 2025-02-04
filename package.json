@@ -2,8 +2,9 @@
   "name": "trading-server",
   "version": "1.0.0",
   "license": "UNLICENSED",
+  "type": "module",
   "scripts": {
-    "dev": "ts-node --esm src/server.ts",
+    "dev": "node --loader ts-node/esm src/server.ts",
     "build": "tsc",
     "start": "node dist/server.js",
     "migrate": "prisma migrate dev"
@@ -17,6 +18,7 @@
   },
   "devDependencies": {
     "@tsconfig/node18": "^18.2.4",
+    "@types/express": "^5.0.0",
     "@types/node": "^20.0.0",
     "@types/ws": "^8.0.0",
     "prisma": "^5.0.0",
