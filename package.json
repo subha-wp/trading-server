@@ -1,0 +1,26 @@
+{
+  "name": "trading-server",
+  "version": "1.0.0",
+  "license": "UNLICENSED",
+  "scripts": {
+    "dev": "ts-node --esm src/server.ts",
+    "build": "tsc",
+    "start": "node dist/server.js",
+    "migrate": "prisma migrate dev"
+  },
+  "dependencies": {
+    "@prisma/client": "^5.0.0",
+    "axios": "^1.5.0",
+    "dotenv": "^16.0.0",
+    "express": "^4.21.2",
+    "ws": "^8.0.0"
+  },
+  "devDependencies": {
+    "@tsconfig/node18": "^18.2.4",
+    "@types/node": "^20.0.0",
+    "@types/ws": "^8.0.0",
+    "prisma": "^5.0.0",
+    "ts-node": "^10.9.1",
+    "typescript": "^5.0.0"
+  }
+}
